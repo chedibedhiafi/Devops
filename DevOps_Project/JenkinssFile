@@ -1,0 +1,122 @@
+pipeline {
+    agent any
+
+    stages {
+        stage("Testing Maven") {
+            steps {
+                sh "mvn -version"
+            }
+        }
+
+        stage("Testing JDK") {
+            steps {
+                sh "java -version"
+            }
+        }
+
+        stage('MVN CLEAN') {
+            steps {
+                dir('DevOps_Project') {
+                    sh 'mvn clean'
+                }
+            }
+        }
+
+        stage('MVN COMPILE') {
+            steps {
+                dir('DevOps_Project') {
+                    sh 'mvn compile'
+                }
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                dir('DevOps_Project') {
+                    sh 'mvn test'
+                }
+            }
+        }
+
+        stage('Generate JaCoCo Coverage Report') {
+            steps {
+                dir('DevOps_Project') {
+                    sh 'mvn jacoco:report'
+                }
+            }
+        }
+
+        stage('MVN SONARQUBE') {
+            steps {
+                dir('DevOps_Project') {
+                    sh 'mvn sonar:sonar -Dsonar.login=admin -Dsonar.password=sonar'
+                }
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                dir('DevOps_Project') {
+                    sh 'mvn deploy -DskipTests -DaltDeploymentRepository=deploymentRepo::default::http://192.168.1.11:8081/repository/maven-releases/'
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    try {
+                        def buildContext = "${WORKSPACE}/DevOps_Project"
+                        def dockerfilePath = "${buildContext}/Dockerfile"
+                        def imageName = 'chedi00009/devops-integration'
+
+                        sh "docker build -t ${imageName} -f ${dockerfilePath} ${buildContext}"
+                    } catch (Exception e) {
+                        currentBuild.result = 'FAILURE'
+                        error("Failed to build Docker image: ${e.message}")
+                    }
+                }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    def dockerUsername = 'chedi00009'
+                    def dockerPassword = '0123456789'
+                    sh "docker login -u $dockerUsername -p $dockerPassword"
+                    dir('DevOps_Project') {
+                        sh 'docker push chedi00009/devops-integration'
+                    }
+                }
+            }
+        }
+
+        stage('Deploy Back') {
+            steps {
+                script {
+                    dir('DevOps_Project'){
+                        sh 'docker compose -f docker-compose.yml up -d'
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                def scannerHome = tool name: 'sonarqube', type: 'hudson.plugins.sonar.SonarRunnerInstallation'
+                withSonarQubeEnv('sonarqube') {
+                    sh "${scannerHome}/bin/sonar-scanner " +
+                        "-Dsonar.login=admin " +
+                        "-Dsonar.password=sonar " +
+                        "-Dsonar.jacoco.reportPaths=DevOps_Project/target/site/jacoco/jacoco.xml " +
+                        "-Dsonar.projectKey=DevOps_Project " +
+                        "-Dsonar.exclusions=vendor/**,resources/**,**/*.java " +
+                        "-Dsonar.host.url=http://192.168.1.11:9000/"
+                }
+            }
+        }
+    }
+}
